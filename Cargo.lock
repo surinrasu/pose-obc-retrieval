@@ -2812,6 +2812,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "html-escape"
+version = "0.2.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d1ad449764d627e22bfd7cd5e8868264fc9236e07c752972b4080cd351cb476"
+dependencies = [
+ "utf8-width",
+]
+
+[[package]]
 name = "http"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2908,6 +2917,30 @@ dependencies = [
  "tokio",
  "tower-service",
  "tracing",
+]
+
+[[package]]
+name = "hypertext"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eb73b82c6a76434fd87a0668ef3ff1a8182512dfb610eef9138169a7e2d3a0ed"
+dependencies = [
+ "html-escape",
+ "hypertext-macros",
+ "itoa",
+ "ryu",
+]
+
+[[package]]
+name = "hypertext-macros"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c120534b9d41bd317a5b111aacc38a34071d15df9462c0e21f6093ade3a03660"
+dependencies = [
+ "html-escape",
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -3308,6 +3341,7 @@ version = "0.1.0"
 dependencies = [
  "burn",
  "clap",
+ "hypertext",
  "image",
  "rand 0.8.6",
  "serde",
@@ -5761,6 +5795,12 @@ dependencies = [
  "percent-encoding",
  "serde",
 ]
+
+[[package]]
+name = "utf8-width"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1292c0d970b54115d14f2492fe0170adf21d68a1de108eebc51c1df4f346a091"
 
 [[package]]
 name = "utf8_iter"

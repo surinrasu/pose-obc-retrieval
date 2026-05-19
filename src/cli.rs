@@ -3,9 +3,15 @@ use std::{error::Error, fmt, path::PathBuf};
 use burn::{backend::Autodiff, tensor::backend::AutodiffBackend};
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use lite_hrnet_burn::{
-    CocoPoseDataset, HeadUpsampleMode, LiteHrNetPoseConfig, PoseDataConfig, PoseTrainingConfig,
-    PoseTrainingProgress, PoseTrainingReport,
+    CandidateIndex, CocoPoseDataset, HeadUpsampleMode, LiteHrNetPoseConfig, PoseDataConfig,
+    PoseTrainingConfig, PoseTrainingProgress, PoseTrainingReport, RetrievalError,
+    RetrievalModelConfig, RetrievalPairDataset, RetrievalTrainingConfig, RetrievalTrainingProgress,
+    build_candidate_index, encode_pose_features, extract_pose_features_from_path,
+    load_retrieval_model, load_retrieval_model_config, read_candidate_index, search_index,
+    serve_retrieval,
+    service::{RetrievalService, RetrievalServiceBackend},
     train::{run_synthetic_training, train_dataset_with_progress},
+    train_retrieval_dataset, write_candidate_index,
 };
 
 pub fn run() -> Result<(), Box<dyn Error>> {
@@ -14,6 +20,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     match cli.command {
         Command::Train(args) => run_train(args),
         Command::Smoke(args) => run_smoke(args),
+        Command::Retrieval(args) => run_retrieval(args),
     }
 }
 
@@ -35,6 +42,26 @@ enum Command {
     Train(TrainArgs),
     /// Run a synthetic forward/backward optimizer smoke check.
     Smoke(SmokeArgs),
+    /// Train, index, search, and serve the oracle-bone pose retrieval system.
+    Retrieval(RetrievalArgs),
+}
+
+#[derive(Debug, Args)]
+struct RetrievalArgs {
+    #[command(subcommand)]
+    command: RetrievalCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum RetrievalCommand {
+    /// Train the pose/glyph twin-tower retrieval model from data/persona_* pairs.
+    Train(RetrievalTrainArgs),
+    /// Precompute candidate glyph embeddings into a JSON index.
+    Index(RetrievalIndexArgs),
+    /// Run a single top-k retrieval query from an image or dataset sample.
+    Search(RetrievalSearchArgs),
+    /// Serve the browser UI for upload/sample queries.
+    Serve(RetrievalServeArgs),
 }
 
 #[derive(Clone, Debug, Args)]
@@ -131,6 +158,132 @@ struct SmokeArgs {
     /// Upsampling mode used by the pose head. Defaults to bilinear on flex and nearest on metal.
     #[arg(long = "head-upsample", value_enum)]
     head_upsample_mode: Option<HeadUpsampleArg>,
+}
+
+#[derive(Clone, Debug, Args)]
+struct RetrievalTrainArgs {
+    /// Root containing data/persona_*/images and data/persona_*/glyphs.
+    #[arg(long = "data-root", value_name = "DIR", default_value = "data")]
+    data_root: PathBuf,
+    /// Directory for retrieval checkpoints, config, and training report.
+    #[arg(
+        short = 'o',
+        long = "output-dir",
+        value_name = "DIR",
+        default_value = "runs/retrieval"
+    )]
+    out_dir: PathBuf,
+    /// Training epochs.
+    #[arg(short = 'e', long, default_value_t = 20, value_parser = parse_positive_count)]
+    epochs: usize,
+    /// Batch size.
+    #[arg(short = 'b', long, default_value_t = 32, value_parser = parse_positive_count)]
+    batch_size: usize,
+    /// Adam learning rate.
+    #[arg(long = "learning-rate", value_name = "LR", default_value_t = 1e-3, value_parser = parse_positive_f64)]
+    learning_rate: f64,
+    /// Hidden dimension of each MLP tower.
+    #[arg(long = "hidden-dim", default_value_t = 128, value_parser = parse_positive_count)]
+    hidden_dim: usize,
+    /// Shared embedding dimension used for cosine search.
+    #[arg(long = "embedding-dim", default_value_t = 64, value_parser = parse_positive_count)]
+    embedding_dim: usize,
+    /// Contrastive softmax temperature.
+    #[arg(long, default_value_t = 0.07, value_parser = parse_positive_f64)]
+    temperature: f64,
+    /// Limit the number of paired training samples.
+    #[arg(long = "max-pairs", value_name = "N", value_parser = parse_positive_count)]
+    max_pairs: Option<usize>,
+    /// Print batch progress every N batches. Use 0 for epoch-only progress.
+    #[arg(long, default_value_t = 20)]
+    log_every: usize,
+    /// RNG seed used for sample shuffling.
+    #[arg(long, default_value_t = 42)]
+    seed: u64,
+    /// Disable dataset shuffling.
+    #[arg(long = "no-shuffle", action = ArgAction::SetFalse, default_value_t = true)]
+    shuffle: bool,
+    /// Save epoch_NNN.mpk checkpoints in addition to last.mpk.
+    #[arg(long = "save-every-epoch", action = ArgAction::SetTrue)]
+    save_every_epoch: bool,
+}
+
+#[derive(Clone, Debug, Args)]
+struct RetrievalIndexArgs {
+    /// Root containing data/persona_*/images and data/persona_*/glyphs.
+    #[arg(long = "data-root", value_name = "DIR", default_value = "data")]
+    data_root: PathBuf,
+    /// Retrieval model checkpoint, with or without the .mpk extension.
+    #[arg(long, value_name = "PATH", default_value = "runs/retrieval/last.mpk")]
+    model: PathBuf,
+    /// Retrieval model config JSON. Defaults to retrieval_config.json next to --model.
+    #[arg(long, value_name = "PATH")]
+    config: Option<PathBuf>,
+    /// Output candidate embedding index.
+    #[arg(
+        short = 'o',
+        long,
+        value_name = "PATH",
+        default_value = "runs/retrieval/glyph_index.json"
+    )]
+    output: PathBuf,
+    /// Keep duplicate glyph candidates from different persona directories.
+    #[arg(long = "include-duplicate-glyphs", action = ArgAction::SetFalse, default_value_t = true)]
+    unique_glyphs: bool,
+}
+
+#[derive(Clone, Debug, Args)]
+struct RetrievalSearchArgs {
+    /// Candidate embedding index JSON.
+    #[arg(
+        long,
+        value_name = "PATH",
+        default_value = "runs/retrieval/glyph_index.json"
+    )]
+    index: PathBuf,
+    /// Retrieval model checkpoint, with or without the .mpk extension.
+    #[arg(long, value_name = "PATH", default_value = "runs/retrieval/last.mpk")]
+    model: PathBuf,
+    /// Retrieval model config JSON. Defaults to config stored in --index or next to --model.
+    #[arg(long, value_name = "PATH")]
+    config: Option<PathBuf>,
+    /// Root containing data/persona_*/images and data/persona_*/glyphs, used with --sample.
+    #[arg(long = "data-root", value_name = "DIR", default_value = "data")]
+    data_root: PathBuf,
+    /// Query image path.
+    #[arg(long, value_name = "PATH", conflicts_with = "sample")]
+    image: Option<PathBuf>,
+    /// Query by pair index from the data directory.
+    #[arg(long, value_name = "N", conflicts_with = "image")]
+    sample: Option<usize>,
+    /// Number of hits to return.
+    #[arg(short = 'k', long = "top-k", default_value_t = 8, value_parser = parse_positive_count)]
+    top_k: usize,
+}
+
+#[derive(Clone, Debug, Args)]
+struct RetrievalServeArgs {
+    /// Address for the HTTP UI.
+    #[arg(long, default_value = "127.0.0.1:8080")]
+    addr: String,
+    /// Root containing data/persona_*/images and data/persona_*/glyphs.
+    #[arg(long = "data-root", value_name = "DIR", default_value = "data")]
+    data_root: PathBuf,
+    /// Optional precomputed candidate embedding index JSON.
+    #[arg(long, value_name = "PATH")]
+    index: Option<PathBuf>,
+    /// Retrieval model checkpoint, with or without the .mpk extension.
+    #[arg(long, value_name = "PATH", default_value = "runs/retrieval/last.mpk")]
+    model: PathBuf,
+    /// Retrieval model config JSON. Defaults to config stored in --index or next to --model.
+    #[arg(long, value_name = "PATH")]
+    config: Option<PathBuf>,
+    /// Default number of hits in the UI.
+    #[arg(short = 'k', long = "top-k", default_value_t = 8, value_parser = parse_positive_count)]
+    top_k: usize,
+    /// Keep duplicate glyph candidates from different persona directories when building in memory.
+    #[arg(long = "include-duplicate-glyphs", action = ArgAction::SetFalse, default_value_t = true)]
+    unique_glyphs: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -386,6 +539,255 @@ fn smoke_with_backend<B: AutodiffBackend>(
         args.input_size.width,
         args.learning_rate,
     );
+    Ok(())
+}
+
+fn run_retrieval(args: RetrievalArgs) -> Result<(), Box<dyn Error>> {
+    match args.command {
+        RetrievalCommand::Train(args) => run_retrieval_train(args),
+        RetrievalCommand::Index(args) => run_retrieval_index(args),
+        RetrievalCommand::Search(args) => run_retrieval_search(args),
+        RetrievalCommand::Serve(args) => run_retrieval_serve(args),
+    }
+}
+
+fn run_retrieval_train(args: RetrievalTrainArgs) -> Result<(), Box<dyn Error>> {
+    type Backend = RetrievalServiceBackend;
+    let device = Default::default();
+    let dataset = RetrievalPairDataset::from_data_root(&args.data_root)?;
+    let model = RetrievalModelConfig {
+        input_dim: lite_hrnet_burn::RETRIEVAL_FEATURE_DIM,
+        hidden_dim: args.hidden_dim,
+        embedding_dim: args.embedding_dim,
+    };
+    let config = RetrievalTrainingConfig {
+        model,
+        epochs: args.epochs,
+        batch_size: args.batch_size,
+        learning_rate: args.learning_rate,
+        temperature: args.temperature,
+        shuffle: args.shuffle,
+        seed: args.seed,
+        max_pairs: args.max_pairs,
+        checkpoint_dir: args.out_dir.clone(),
+        log_every: args.log_every,
+        save_every_epoch: args.save_every_epoch,
+    };
+
+    let train_pairs = limited_len(dataset.len(), args.max_pairs);
+    println!("Training pose/glyph retrieval");
+    println!("  pairs: {train_pairs} ({})", args.data_root.display());
+    println!(
+        "  input: {}  hidden: {}  embedding: {}",
+        config.model.input_dim, config.model.hidden_dim, config.model.embedding_dim
+    );
+    println!(
+        "  batch: {}  epochs: {}  lr: {}  temperature: {}",
+        config.batch_size, config.epochs, config.learning_rate, config.temperature
+    );
+    println!("  checkpoints: {}", args.out_dir.display());
+
+    let checkpoint_dir = args.out_dir.clone();
+    let total_epochs = args.epochs;
+    let (_model, report) =
+        train_retrieval_dataset::<Backend, _>(config, &dataset, &device, |progress| {
+            print_retrieval_progress(progress, total_epochs);
+        })?;
+    let last = report.epochs.last().expect("at least one epoch");
+    println!("Finished retrieval training");
+    println!("  final epoch: {}", last.epoch);
+    println!("  train loss: {:.6}", last.train_loss);
+    println!(
+        "  config: {}",
+        checkpoint_dir.join("retrieval_config.json").display()
+    );
+    println!(
+        "  last checkpoint: {}",
+        checkpoint_dir.join("last.mpk").display()
+    );
+    Ok(())
+}
+
+fn run_retrieval_index(args: RetrievalIndexArgs) -> Result<(), Box<dyn Error>> {
+    type Backend = RetrievalServiceBackend;
+    let device = Default::default();
+    let dataset = RetrievalPairDataset::from_data_root(&args.data_root)?;
+    let model_config =
+        load_retrieval_config_or_default(args.config.as_ref(), Some(&args.model), None)?;
+    let model = load_retrieval_model::<Backend>(&model_config, &args.model, &device)?;
+    let index = build_candidate_index(&model, model_config, &dataset, args.unique_glyphs, &device)?;
+    ensure_parent_dir(&args.output)?;
+    write_candidate_index(&args.output, &index)?;
+    println!("Built candidate glyph index");
+    println!("  candidates: {}", index.entries.len());
+    println!("  output: {}", args.output.display());
+    Ok(())
+}
+
+fn run_retrieval_search(args: RetrievalSearchArgs) -> Result<(), Box<dyn Error>> {
+    type Backend = RetrievalServiceBackend;
+    let device = Default::default();
+    let index = read_candidate_index(&args.index)?;
+    let model_config =
+        load_retrieval_config_or_default(args.config.as_ref(), Some(&args.model), Some(&index))?;
+    let model = load_retrieval_model::<Backend>(&model_config, &args.model, &device)?;
+
+    let (features, label) = match (&args.image, args.sample) {
+        (Some(image), None) => (
+            extract_pose_features_from_path(image)?,
+            image.display().to_string(),
+        ),
+        (None, Some(sample)) => {
+            let dataset = RetrievalPairDataset::from_data_root(&args.data_root)?;
+            let pair = dataset.pairs().get(sample).ok_or_else(|| {
+                RetrievalError::InvalidData(format!(
+                    "sample index {sample} out of range for {} pairs",
+                    dataset.len()
+                ))
+            })?;
+            (
+                extract_pose_features_from_path(&pair.image_path)?,
+                format!("sample #{sample} {}", pair.id),
+            )
+        }
+        _ => {
+            return Err("provide exactly one of --image or --sample".into());
+        }
+    };
+    let embedding = encode_pose_features(&model, &features, &device)?;
+    let hits = search_index(&index, &embedding, args.top_k);
+
+    println!("Query: {label}");
+    for (rank, hit) in hits.iter().enumerate() {
+        let label = hit
+            .entry
+            .character
+            .as_deref()
+            .unwrap_or(hit.entry.id.as_str());
+        println!(
+            "{:02}. score {:.4}  {}  {}  {}",
+            rank + 1,
+            hit.score,
+            label,
+            hit.entry.codepoint.as_deref().unwrap_or("-"),
+            hit.entry.glyph_path.display()
+        );
+    }
+    Ok(())
+}
+
+fn run_retrieval_serve(args: RetrievalServeArgs) -> Result<(), Box<dyn Error>> {
+    type Backend = RetrievalServiceBackend;
+    let device = Default::default();
+    let dataset = RetrievalPairDataset::from_data_root(&args.data_root)?;
+
+    let (index, model_config) = match &args.index {
+        Some(index_path) => {
+            let index = read_candidate_index(index_path)?;
+            let model_config = load_retrieval_config_or_default(
+                args.config.as_ref(),
+                Some(&args.model),
+                Some(&index),
+            )?;
+            (index, model_config)
+        }
+        None => {
+            let model_config =
+                load_retrieval_config_or_default(args.config.as_ref(), Some(&args.model), None)?;
+            let model = load_retrieval_model::<Backend>(&model_config, &args.model, &device)?;
+            let index = build_candidate_index(
+                &model,
+                model_config.clone(),
+                &dataset,
+                args.unique_glyphs,
+                &device,
+            )?;
+            (index, model_config)
+        }
+    };
+
+    let model = load_retrieval_model::<Backend>(&model_config, &args.model, &device)?;
+    println!("Serving retrieval UI");
+    println!("  pairs: {}", dataset.len());
+    println!("  candidates: {}", index.entries.len());
+    println!("  model: {}", args.model.display());
+    serve_retrieval(
+        &args.addr,
+        RetrievalService {
+            model,
+            index,
+            dataset,
+            device,
+            default_top_k: args.top_k,
+        },
+    )?;
+    Ok(())
+}
+
+fn print_retrieval_progress(progress: RetrievalTrainingProgress, total_epochs: usize) {
+    match progress {
+        RetrievalTrainingProgress::Batch(batch) => {
+            println!(
+                "[retrieval epoch {}] batch {:05} pairs {} train_loss {:.6}",
+                format_epoch(batch.epoch, total_epochs),
+                batch.train_batches,
+                batch.train_pairs,
+                batch.train_loss
+            );
+        }
+        RetrievalTrainingProgress::Epoch(epoch) => {
+            println!(
+                "[retrieval epoch {}] train_loss {:.6} elapsed {:.2}s",
+                format_epoch(epoch.epoch, total_epochs),
+                epoch.train_loss,
+                epoch.elapsed_seconds
+            );
+        }
+    }
+}
+
+fn load_retrieval_config_or_default(
+    config_path: Option<&PathBuf>,
+    model_path: Option<&PathBuf>,
+    index: Option<&CandidateIndex>,
+) -> Result<RetrievalModelConfig, Box<dyn Error>> {
+    if let Some(config_path) = config_path {
+        return Ok(load_retrieval_model_config(config_path)?);
+    }
+    if let Some(index) = index {
+        return Ok(index.model.clone());
+    }
+    if let Some(model_path) = model_path {
+        let inferred = default_retrieval_config_path(model_path);
+        if inferred.is_file() {
+            return Ok(load_retrieval_model_config(inferred)?);
+        }
+    }
+    Err("retrieval config not found; pass --config or use a model directory with retrieval_config.json".into())
+}
+
+fn default_retrieval_config_path(model_path: &PathBuf) -> PathBuf {
+    let base = if model_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("mpk"))
+    {
+        model_path.with_extension("")
+    } else {
+        model_path.clone()
+    };
+    base.parent()
+        .map(|parent| parent.join("retrieval_config.json"))
+        .unwrap_or_else(|| PathBuf::from("retrieval_config.json"))
+}
+
+fn ensure_parent_dir(path: &PathBuf) -> Result<(), Box<dyn Error>> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)?;
+    }
     Ok(())
 }
 

@@ -15,3 +15,4 @@ image = { version = "0.25.10", default-features = false, features = ["jpeg", "pn
 rand = "0.8.6"
 serde = { version = "1.0.228", features = ["derive"] }
 json = { package = "simd-json", version = "0.17.0" }
+hypertext = "0.12.1"
