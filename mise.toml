@@ -1,6 +1,7 @@
 #:schema https://mise.jdx.dev/schema/mise.json
 
 [tools]
+"pipx:hf" = "latest"
 "pipx:kaggle" = "latest"
 rust = { version = "latest", components = "cargo,rust-analyzer" }
 
@@ -116,6 +117,38 @@ echo "Train with:"
 echo "  mise run train:coco2017"
 '''
 
+[tasks."data:pose-obc"]
+description = "Download surinrasu/pose-obc retrieval dataset from Hugging Face"
+run = '''
+set -eu
+
+DATA_DIR="${DATA_DIR:-data/pose-obc}"
+HF_DATASET="${HF_DATASET:-surinrasu/pose-obc}"
+
+mkdir -p "${DATA_DIR}"
+
+echo "Downloading ${HF_DATASET}..."
+hf download "${HF_DATASET}" --repo-type dataset --local-dir "${DATA_DIR}"
+
+found_data=0
+for persona_dir in "${DATA_DIR}"/persona_*; do
+  if [ -d "${persona_dir}/images" ] && [ -d "${persona_dir}/glyphs" ]; then
+    found_data=1
+    break
+  fi
+done
+
+if [ "${found_data}" -eq 0 ]; then
+  echo "Downloaded data did not contain a recognizable pose-obc retrieval layout."
+  echo "Expected persona_*/images and persona_*/glyphs under ${DATA_DIR}."
+  exit 1
+fi
+
+echo "pose-obc retrieval data is ready under ${DATA_DIR}"
+echo "Train with:"
+echo "  mise run train:retrieval"
+'''
+
 [tasks."train:coco2017"]
 description = "Train on COCO 2017"
 run = '''
@@ -144,6 +177,218 @@ cargo run --release -- train \
   --validation-images "${DATA_DIR}/val2017" \
   --output-dir "${OUTPUT_DIR}" \
   "$@"
+'''
+
+[tasks."train:retrieval"]
+description = "Train retrieval on surinrasu/pose-obc"
+run = '''
+set -eu
+
+DATA_ROOT="${DATA_ROOT:-data/pose-obc}"
+OUTPUT_DIR="${OUTPUT_DIR:-runs/retrieval}"
+
+found_data=0
+for persona_dir in "${DATA_ROOT}"/persona_*; do
+  if [ -d "${persona_dir}/images" ] && [ -d "${persona_dir}/glyphs" ]; then
+    found_data=1
+    break
+  fi
+done
+
+if [ "${found_data}" -eq 0 ]; then
+  echo "Missing pose-obc retrieval data under ${DATA_ROOT}."
+  echo "Run first: mise run data:pose-obc"
+  exit 1
+fi
+
+cargo run --release -- retrieval train \
+  --data-root "${DATA_ROOT}" \
+  --output-dir "${OUTPUT_DIR}" \
+  "$@"
+'''
+
+[tasks."train:retrieval:metal"]
+description = "Train retrieval on surinrasu/pose-obc with Metal"
+run = '''
+set -eu
+
+DATA_ROOT="${DATA_ROOT:-data/pose-obc}"
+OUTPUT_DIR="${OUTPUT_DIR:-runs/retrieval}"
+
+found_data=0
+for persona_dir in "${DATA_ROOT}"/persona_*; do
+  if [ -d "${persona_dir}/images" ] && [ -d "${persona_dir}/glyphs" ]; then
+    found_data=1
+    break
+  fi
+done
+
+if [ "${found_data}" -eq 0 ]; then
+  echo "Missing pose-obc retrieval data under ${DATA_ROOT}."
+  echo "Run first: mise run data:pose-obc"
+  exit 1
+fi
+
+cargo run --release --features metal -- retrieval train \
+  --backend metal \
+  --data-root "${DATA_ROOT}" \
+  --output-dir "${OUTPUT_DIR}" \
+  "$@"
+'''
+
+[tasks."index:retrieval"]
+description = "Build retrieval glyph index"
+run = '''
+set -eu
+
+DATA_ROOT="${DATA_ROOT:-data/pose-obc}"
+MODEL="${MODEL:-runs/retrieval/last.mpk}"
+INDEX="${INDEX:-runs/retrieval/glyph_index.json}"
+
+found_data=0
+for persona_dir in "${DATA_ROOT}"/persona_*; do
+  if [ -d "${persona_dir}/images" ] && [ -d "${persona_dir}/glyphs" ]; then
+    found_data=1
+    break
+  fi
+done
+
+if [ "${found_data}" -eq 0 ]; then
+  echo "Missing pose-obc retrieval data under ${DATA_ROOT}."
+  echo "Run first: mise run data:pose-obc"
+  exit 1
+fi
+
+if [ ! -f "${MODEL}" ] && [ ! -f "${MODEL%.mpk}.mpk" ]; then
+  echo "Missing retrieval model: ${MODEL}"
+  echo "Run first: mise run train:retrieval"
+  exit 1
+fi
+
+index_dir="${INDEX%/*}"
+if [ "${index_dir}" != "${INDEX}" ] && [ -n "${index_dir}" ]; then
+  mkdir -p "${index_dir}"
+fi
+
+cargo run --release -- retrieval index \
+  --data-root "${DATA_ROOT}" \
+  --model "${MODEL}" \
+  --output "${INDEX}" \
+  "$@"
+'''
+
+[tasks."search:retrieval"]
+description = "Search retrieval index with an image or sample"
+run = '''
+set -eu
+
+DATA_ROOT="${DATA_ROOT:-data/pose-obc}"
+MODEL="${MODEL:-runs/retrieval/last.mpk}"
+INDEX="${INDEX:-runs/retrieval/glyph_index.json}"
+TOP_K="${TOP_K:-8}"
+
+found_data=0
+for persona_dir in "${DATA_ROOT}"/persona_*; do
+  if [ -d "${persona_dir}/images" ] && [ -d "${persona_dir}/glyphs" ]; then
+    found_data=1
+    break
+  fi
+done
+
+if [ "${found_data}" -eq 0 ]; then
+  echo "Missing pose-obc retrieval data under ${DATA_ROOT}."
+  echo "Run first: mise run data:pose-obc"
+  exit 1
+fi
+
+if [ ! -f "${MODEL}" ] && [ ! -f "${MODEL%.mpk}.mpk" ]; then
+  echo "Missing retrieval model: ${MODEL}"
+  echo "Run first: mise run train:retrieval"
+  exit 1
+fi
+
+if [ ! -f "${INDEX}" ]; then
+  echo "Missing retrieval index: ${INDEX}"
+  echo "Run first: mise run index:retrieval"
+  exit 1
+fi
+
+if [ -n "${IMAGE:-}" ]; then
+  cargo run --release -- retrieval search \
+    --data-root "${DATA_ROOT}" \
+    --model "${MODEL}" \
+    --index "${INDEX}" \
+    --image "${IMAGE}" \
+    --top-k "${TOP_K}" \
+    "$@"
+elif [ -n "${SAMPLE:-}" ]; then
+  cargo run --release -- retrieval search \
+    --data-root "${DATA_ROOT}" \
+    --model "${MODEL}" \
+    --index "${INDEX}" \
+    --sample "${SAMPLE}" \
+    --top-k "${TOP_K}" \
+    "$@"
+elif [ "$#" -gt 0 ]; then
+  cargo run --release -- retrieval search \
+    --data-root "${DATA_ROOT}" \
+    --model "${MODEL}" \
+    --index "${INDEX}" \
+    "$@"
+else
+  echo "Set IMAGE=/path/to/query.png, SAMPLE=0, or pass retrieval search arguments."
+  exit 1
+fi
+'''
+
+[tasks."serve:retrieval"]
+description = "Serve retrieval UI"
+run = '''
+set -eu
+
+DATA_ROOT="${DATA_ROOT:-data/pose-obc}"
+MODEL="${MODEL:-runs/retrieval/last.mpk}"
+INDEX="${INDEX:-runs/retrieval/glyph_index.json}"
+ADDR="${ADDR:-127.0.0.1:8080}"
+TOP_K="${TOP_K:-8}"
+
+found_data=0
+for persona_dir in "${DATA_ROOT}"/persona_*; do
+  if [ -d "${persona_dir}/images" ] && [ -d "${persona_dir}/glyphs" ]; then
+    found_data=1
+    break
+  fi
+done
+
+if [ "${found_data}" -eq 0 ]; then
+  echo "Missing pose-obc retrieval data under ${DATA_ROOT}."
+  echo "Run first: mise run data:pose-obc"
+  exit 1
+fi
+
+if [ ! -f "${MODEL}" ] && [ ! -f "${MODEL%.mpk}.mpk" ]; then
+  echo "Missing retrieval model: ${MODEL}"
+  echo "Run first: mise run train:retrieval"
+  exit 1
+fi
+
+if [ -f "${INDEX}" ]; then
+  cargo run --release -- retrieval serve \
+    --data-root "${DATA_ROOT}" \
+    --model "${MODEL}" \
+    --index "${INDEX}" \
+    --addr "${ADDR}" \
+    --top-k "${TOP_K}" \
+    "$@"
+else
+  echo "Retrieval index not found at ${INDEX}; serving will build candidates in memory."
+  cargo run --release -- retrieval serve \
+    --data-root "${DATA_ROOT}" \
+    --model "${MODEL}" \
+    --addr "${ADDR}" \
+    --top-k "${TOP_K}" \
+    "$@"
+fi
 '''
 
 [tasks."train:coco2017:metal"]
