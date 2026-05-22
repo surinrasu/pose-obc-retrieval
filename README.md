@@ -1,0 +1,139 @@
+# Pose-OBC Retrieval
+
+![](./banner.png)
+
+`pose-obc-retrieval` is a Rust CLI and browser UI for retrieving oracle-bone glyphs from human pose. It trains a compact twin-tower retrieval model that embeds SpinePose style 37-keypoint pose features and raster glyph shape features into the same cosine-search space.
+
+## Usage
+
+The project uses [mise](https://mise.jdx.dev/) for the Rust toolchain and tasks.
+
+```sh
+mise trust
+mise install
+
+# Download the pose-obc retrieval dataset from Hugging Face
+# You may need to login to an hf account with `hf auth login` first
+mise run data:pose-obc
+
+# Train the retrieval model and build the glyph embedding index
+mise run train:retrieval
+mise run index:retrieval
+
+# Search by a dataset sample
+SAMPLE=0 mise run search:retrieval
+
+# Start the web UI
+mise run serve:retrieval
+```
+
+The UI listens on `http://127.0.0.1:8080` by default. Use `ADDR=127.0.0.1:1234`to choose another address.
+
+## Retrieval Workflow
+
+### Train
+
+```sh
+mise run train:retrieval -- --epochs 20 --batch-size 32
+```
+
+Outputs are written under `runs/retrieval/`:
+
+- `last.mpk`: latest retrieval checkpoint
+- `retrieval_config.json`: model dimensions used by the checkpoint
+- `retrieval_training_report.json`: per-epoch loss report
+
+For Metal:
+
+```sh
+mise run train:retrieval:metal
+```
+
+CUDA support will be added later, same applies below.
+
+### Index
+
+```sh
+mise run index:retrieval
+```
+
+This writes `runs/retrieval/glyph_index.json`. The index stores candidate glyph
+metadata plus normalized embeddings, so repeated searches do not need to
+re-encode the glyph corpus.
+
+### Search
+
+```sh
+SAMPLE=0 mise run search:retrieval
+IMAGE=/path/to/query.png mise run search:retrieval
+TOP_K=16 SAMPLE=0 mise run search:retrieval
+```
+
+### Serve
+
+```sh
+mise run serve:retrieval
+mise run serve:retrieval:metal
+mise run serve:retrieval:live
+```
+
+The live mode posts browser camera frames to the local service and returns the
+top glyph candidates for each frame.
+
+## Data Layout
+
+The retrieval dataset is expected to contain one or more `persona_*`
+directories. Image and glyph files are paired by filename.
+
+```text
+data/pose-obc/
+  persona_01/
+    images/
+      0201_u516D.png
+    glyphs/
+      0201_u516D.png
+    poses/
+      0201_u516D.json
+```
+
+## Pose Model Training
+
+The repository also contains a Lite-HRNet training path for COCO person-keypoint
+data with 37-keypoint labels.
+
+```sh
+mise run data:coco2017
+mise run data:coco2017:generate-pose37
+mise run train:coco2017
+```
+
+For Metal:
+
+```sh
+mise run train:coco2017:metal
+```
+
+## Development
+
+```sh
+mise run check
+mise run test
+mise run ci
+```
+
+Useful task names:
+
+- `mise run assets:retrieval`: refresh local BeerCSS and Material Symbols assets
+- `mise run data:pose-obc`: download the retrieval dataset
+- `mise run data:pose-obc:generate-pose`: generate cached SpinePose JSON files
+- `mise run train:retrieval`: train the pose/glyph retrieval model
+- `mise run index:retrieval`: precompute candidate glyph embeddings
+- `mise run serve:retrieval`: run the web UI
+
+## License
+
+This program is free software: you can redistribute it and/or modify it under the terms of the GNU Lesser General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public License for more details.
+
+You should have received a copy of the GNU Lesser General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
