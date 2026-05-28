@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use image::DynamicImage;
+use img::DynamicImage;
 use serde::Deserialize;
 
 use super::burn;
@@ -33,7 +33,7 @@ impl SpinePoseEstimator {
             return read_spinepose_features(pose_path);
         }
 
-        let image = image::open(path)?;
+        let image = crate::image::open_dynamic_image(path)?;
         let keypoints = run_spinepose(&image)?;
         spinepose_keypoints_to_features(&keypoints)
     }
@@ -42,7 +42,7 @@ impl SpinePoseEstimator {
         &self,
         bytes: &[u8],
     ) -> Result<Vec<f32>, RetrievalError> {
-        let image = image::load_from_memory(bytes)?;
+        let image = crate::image::load_dynamic_image_from_memory(bytes)?;
         let keypoints = run_spinepose(&image)?;
         spinepose_keypoints_to_features(&keypoints)
     }

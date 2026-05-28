@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use image::{DynamicImage, GenericImageView, ImageReader};
+use img::{DynamicImage, GenericImageView};
 
 use super::{RETRIEVAL_FEATURE_DIM, RETRIEVAL_KEYPOINTS, RetrievalError};
 use crate::pose::spinepose::{estimate_pose_features_from_bytes, estimate_pose_features_from_path};
@@ -15,7 +15,7 @@ pub fn extract_pose_features_from_path(path: impl AsRef<Path>) -> Result<Vec<f32
 pub fn extract_glyph_features_from_path(
     path: impl AsRef<Path>,
 ) -> Result<Vec<f32>, RetrievalError> {
-    let image = ImageReader::open(path)?.decode()?;
+    let image = crate::image::open_dynamic_image(path)?;
     Ok(extract_shape_features(&image))
 }
 
@@ -139,7 +139,7 @@ fn extract_shape_features(image: &DynamicImage) -> Vec<f32> {
     features
 }
 
-fn border_luma(image: &image::RgbaImage, width: u32, height: u32) -> f32 {
+fn border_luma(image: &img::RgbaImage, width: u32, height: u32) -> f32 {
     let mut total = 0.0_f32;
     let mut count = 0.0_f32;
 

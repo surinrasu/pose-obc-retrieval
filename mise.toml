@@ -170,7 +170,6 @@ CSS
 
 [tasks."data:coco2017"]
 description = "Download COCO 2017 dataset"
-tools = { "pipx:kaggle" = "latest" }
 sources = ["mise.toml"]
 outputs = [
   "{{ env.DATA_DIR | default(value='data/coco') }}/.mise-coco2017-ready",
@@ -179,13 +178,25 @@ run = '''
 set -eu
 
 DATA_DIR="${DATA_DIR:-data/coco}"
-KAGGLE_DATASET="${KAGGLE_DATASET:-awsaf49/coco-2017-dataset}"
-DOWNLOAD_DIR="${DATA_DIR}/.kaggle-download"
+COCO2017_URL="${COCO2017_URL:-https://www.kaggle.com/api/v1/datasets/download/awsaf49/coco-2017-dataset}"
+DOWNLOAD_DIR="${DATA_DIR}/.coco2017-download"
+ARCHIVE_PATH="${DOWNLOAD_DIR}/coco2017.zip"
+PARTIAL_PATH="${ARCHIVE_PATH}.part"
+COMPLETE_PATH="${ARCHIVE_PATH}.complete"
 
 mkdir -p "${DATA_DIR}" "${DOWNLOAD_DIR}"
 
-echo "Downloading ${KAGGLE_DATASET}..."
-kaggle datasets download -d "${KAGGLE_DATASET}" -p "${DOWNLOAD_DIR}" --unzip
+if [ ! -s "${ARCHIVE_PATH}" ] || [ ! -e "${COMPLETE_PATH}" ]; then
+  echo "Downloading COCO 2017 from ${COCO2017_URL}..."
+  curl -fL --retry 3 --retry-delay 5 -C - -o "${PARTIAL_PATH}" "${COCO2017_URL}"
+  mv "${PARTIAL_PATH}" "${ARCHIVE_PATH}"
+  touch "${COMPLETE_PATH}"
+else
+  echo "Keeping existing ${ARCHIVE_PATH}"
+fi
+
+echo "Extracting ${ARCHIVE_PATH}..."
+unzip -q -o "${ARCHIVE_PATH}" -d "${DOWNLOAD_DIR}"
 
 COCO_ROOT=""
 for candidate in \
@@ -495,8 +506,7 @@ echo "COCO-37 pose JSON is ready under ${OUT_DIR}"
 '''
 
 [tasks."data:pose-obc"]
-description = "Download surinrasu/pose-obc retrieval dataset from Hugging Face"
-tools = { "pipx:hf" = "latest" }
+description = "Unpack the Git LFS pose-obc retrieval dataset"
 sources = ["mise.toml"]
 outputs = [
   "{{ env.DATA_DIR | default(value='data/pose-obc') }}/.mise-pose-obc-ready",
@@ -505,12 +515,14 @@ run = '''
 set -eu
 
 DATA_DIR="${DATA_DIR:-data/pose-obc}"
-HF_DATASET="${HF_DATASET:-surinrasu/pose-obc}"
+PACKED_DIR="${PACKED_DIR:-data/pose-obc-packed}"
 
-mkdir -p "${DATA_DIR}"
+git lfs pull --include "${PACKED_DIR}/**"
 
-echo "Downloading ${HF_DATASET}..."
-hf download "${HF_DATASET}" --repo-type dataset --local-dir "${DATA_DIR}"
+cargo run --release -- dataset unpack \
+  --packed-root "${PACKED_DIR}" \
+  --output-root "${DATA_DIR}" \
+  --force
 
 found_data=0
 for persona_dir in "${DATA_DIR}"/persona_*; do
@@ -521,7 +533,7 @@ for persona_dir in "${DATA_DIR}"/persona_*; do
 done
 
 if [ "${found_data}" -eq 0 ]; then
-  echo "Downloaded data did not contain a recognizable pose-obc retrieval layout."
+  echo "Unpacked data did not contain a recognizable pose-obc retrieval layout."
   echo "Expected persona_*/images and persona_*/glyphs under ${DATA_DIR}."
   exit 1
 fi
@@ -533,237 +545,32 @@ echo "Train with:"
 echo "  mise run train:retrieval"
 '''
 
-[tasks."data:pose-obc:upload"]
-description = "Upload local pose-obc retrieval data to Hugging Face"
+[tasks."data:pose-obc:pack"]
+description = "Pack local pose-obc persona directories into Git LFS AVIF/JSONL files"
 depends = ["check:data:pose-obc"]
-tools = { "pipx:hf" = "latest", jq = "latest" }
 run = '''
 set -eu
 
 DATA_ROOT="${DATA_ROOT:-data/pose-obc}"
-HF_DATASET="${HF_DATASET:-surinrasu/pose-obc}"
-HF_REVISION="${HF_REVISION:-main}"
-HF_COMMIT_MESSAGE="${HF_COMMIT_MESSAGE:-Update pose-obc dataset}"
-HF_FINE_RETRIES="${HF_FINE_RETRIES:-1}"
-HF_FILE_RETRIES="${HF_FILE_RETRIES:-3}"
-HF_RETRY_SECONDS="${HF_RETRY_SECONDS:-10}"
-HF_SKIP_EXISTING="${HF_SKIP_EXISTING:-1}"
-HF_UPLOAD_STRATEGY="${HF_UPLOAD_STRATEGY:-large-folder}"
-HF_RESPONSES_FILE_BY_FILE="${HF_RESPONSES_FILE_BY_FILE:-0}"
-HF_NUM_WORKERS="${HF_NUM_WORKERS:-4}"
-REMOTE_FILE_LIST="${REMOTE_FILE_LIST:-}"
-export HF_HUB_DISABLE_XET="${HF_HUB_DISABLE_XET:-1}"
+PACKED_ROOT="${PACKED_ROOT:-data/pose-obc-packed}"
 
-echo "Uploading ${DATA_ROOT} to ${HF_DATASET}@${HF_REVISION}..."
-echo "Skipping local metadata: .DS_Store"
+cargo run --release -- dataset pack \
+  --data-root "${DATA_ROOT}" \
+  --output-root "${PACKED_ROOT}" \
+  --force \
+  "$@"
+'''
 
-if [ -f "${DATA_ROOT}/.gitattributes" ]; then
-  echo "Uploading dataset .gitattributes..."
-  hf upload "${HF_DATASET}" "${DATA_ROOT}/.gitattributes" .gitattributes \
-    --repo-type dataset \
-    --revision "${HF_REVISION}" \
-    --commit-message "${HF_COMMIT_MESSAGE}: .gitattributes"
-fi
+[tasks."data:pose-obc:verify"]
+description = "Verify packed pose-obc AVIF/JSONL files"
+run = '''
+set -eu
 
-if [ "${HF_UPLOAD_STRATEGY}" = "large-folder" ]; then
-  hf upload-large-folder "${HF_DATASET}" "${DATA_ROOT}" \
-    --repo-type dataset \
-    --revision "${HF_REVISION}" \
-    --num-workers "${HF_NUM_WORKERS}" \
-    --exclude ".DS_Store" \
-    --exclude "**/.DS_Store" \
-    --exclude ".cache/**" \
-    --exclude "**/.cache/**" \
-    --exclude ".mise-*-ready"
-  exit 0
-fi
+PACKED_ROOT="${PACKED_ROOT:-data/pose-obc-packed}"
 
-if [ "${HF_SKIP_EXISTING}" != "0" ]; then
-  if [ -z "${REMOTE_FILE_LIST}" ]; then
-    REMOTE_FILE_LIST="$(mktemp)"
-    trap 'rm -f "${REMOTE_FILE_LIST}"' EXIT
-  fi
-
-  echo "Fetching remote file list for ${HF_DATASET}@${HF_REVISION}..."
-  hf datasets info "${HF_DATASET}" \
-    --revision "${HF_REVISION}" \
-    --expand siblings \
-    --format json \
-    | jq -r '.siblings[].rfilename' > "${REMOTE_FILE_LIST}"
-
-  remote_count="$(wc -l < "${REMOTE_FILE_LIST}" | tr -d ' ')"
-  echo "Remote currently has ${remote_count} files."
-fi
-
-remote_has() {
-  if [ "${HF_SKIP_EXISTING}" = "0" ]; then
-    return 1
-  fi
-
-  grep -Fqx "$1" "${REMOTE_FILE_LIST}"
-}
-
-prefix_complete() {
-  component_dir="$1"
-  prefix="$2"
-
-  for file_path in "${component_dir}/${prefix}"*; do
-    if [ ! -f "${file_path}" ]; then
-      continue
-    fi
-
-    repo_path="${file_path#"${DATA_ROOT}/"}"
-    if ! remote_has "${repo_path}"; then
-      return 1
-    fi
-  done
-
-  return 0
-}
-
-upload_pattern() {
-  include_pattern="$1"
-  commit_label="$2"
-  max_attempts="$3"
-  attempt=1
-
-  while true; do
-    echo "Uploading ${commit_label}..."
-    if hf upload "${HF_DATASET}" "${DATA_ROOT}" . \
-      --repo-type dataset \
-      --revision "${HF_REVISION}" \
-      --commit-message "${HF_COMMIT_MESSAGE}: ${commit_label}" \
-      --include "${include_pattern}" \
-      --exclude ".DS_Store" \
-      --exclude "**/.DS_Store"
-    then
-      return 0
-    fi
-
-    if [ "${HF_SKIP_EXISTING}" != "0" ]; then
-      hf datasets info "${HF_DATASET}" \
-        --revision "${HF_REVISION}" \
-        --expand siblings \
-        --format json \
-        | jq -r '.siblings[].rfilename' > "${REMOTE_FILE_LIST}"
-    fi
-
-    if [ "${attempt}" -ge "${max_attempts}" ]; then
-      echo "Giving up on ${commit_label} after ${attempt} attempts."
-      return 1
-    fi
-
-    sleep_seconds=$((HF_RETRY_SECONDS * attempt))
-    echo "Upload failed for ${commit_label}; retrying in ${sleep_seconds}s..."
-    sleep "${sleep_seconds}"
-    attempt=$((attempt + 1))
-  done
-}
-
-upload_file() {
-  file_path="$1"
-  repo_path="${file_path#"${DATA_ROOT}/"}"
-  attempt=1
-
-  while true; do
-    echo "Uploading ${repo_path}..."
-    if remote_has "${repo_path}"; then
-      echo "Skipping ${repo_path}; already present on remote."
-      return 0
-    fi
-
-    if hf upload "${HF_DATASET}" "${file_path}" "${repo_path}" \
-      --repo-type dataset \
-      --revision "${HF_REVISION}" \
-      --commit-message "${HF_COMMIT_MESSAGE}: ${repo_path}"
-    then
-      return 0
-    fi
-
-    if [ "${attempt}" -ge "${HF_FILE_RETRIES}" ]; then
-      echo "Giving up on ${repo_path} after ${attempt} attempts."
-      return 1
-    fi
-
-    if [ "${HF_SKIP_EXISTING}" != "0" ]; then
-      hf datasets info "${HF_DATASET}" \
-        --revision "${HF_REVISION}" \
-        --expand siblings \
-        --format json \
-        | jq -r '.siblings[].rfilename' > "${REMOTE_FILE_LIST}"
-    fi
-
-    sleep_seconds=$((HF_RETRY_SECONDS * attempt))
-    echo "Upload failed for ${repo_path}; retrying in ${sleep_seconds}s..."
-    sleep "${sleep_seconds}"
-    attempt=$((attempt + 1))
-  done
-}
-
-upload_files_for_prefix() {
-  component_dir="$1"
-  prefix="$2"
-
-  echo "Retrying ${component_dir}/${prefix}* file by file..."
-  for file_path in "${component_dir}/${prefix}"*; do
-    if [ ! -f "${file_path}" ]; then
-      continue
-    fi
-
-    upload_file "${file_path}"
-  done
-}
-
-upload_component() {
-  persona_name="$1"
-  component_name="$2"
-  component_dir="${DATA_ROOT}/${persona_name}/${component_name}"
-
-  if [ ! -d "${component_dir}" ]; then
-    return 0
-  fi
-
-  echo "Uploading ${persona_name}/${component_name} by two-digit filename prefix..."
-  for first in 0 1 2 3 4 5 6 7 8 9; do
-    for second in 0 1 2 3 4 5 6 7 8 9; do
-      set -- "${component_dir}/${first}${second}"*
-      if [ ! -e "$1" ]; then
-        continue
-      fi
-
-      if prefix_complete "${component_dir}" "${first}${second}"; then
-        echo "Skipping ${persona_name}/${component_name}/${first}${second}*; already present on remote."
-        continue
-      fi
-
-      if [ "${component_name}" = "responses" ] && [ "${HF_RESPONSES_FILE_BY_FILE}" != "0" ]; then
-        upload_files_for_prefix "${component_dir}" "${first}${second}"
-        continue
-      fi
-
-      if upload_pattern \
-        "${persona_name}/${component_name}/${first}${second}*" \
-        "${persona_name}/${component_name}/${first}${second}*" \
-        "${HF_FINE_RETRIES}"
-      then
-        continue
-      fi
-
-      upload_files_for_prefix "${component_dir}" "${first}${second}"
-    done
-  done
-}
-
-for persona_dir in "${DATA_ROOT}"/persona_*; do
-  if [ ! -d "${persona_dir}" ]; then
-    continue
-  fi
-
-  persona_name="${persona_dir##*/}"
-  for component_name in glyphs images poses prompts responses; do
-    upload_component "${persona_name}" "${component_name}"
-  done
-done
+cargo run --release -- dataset verify \
+  --packed-root "${PACKED_ROOT}" \
+  "$@"
 '''
 
 [tasks."data:pose-obc:generate-pose"]
@@ -1053,6 +860,7 @@ cargo run --release --features metal -- train retrieval \
 description = "Build retrieval glyph index"
 depends = ["check:data:pose-obc", "check:model:retrieval"]
 sources = [
+  "{{ env.DATA_ROOT | default(value='data/pose-obc') }}/persona_*/glyphs/*.avif",
   "{{ env.DATA_ROOT | default(value='data/pose-obc') }}/persona_*/glyphs/*.png",
   "{{ env.MODEL | default(value='runs/retrieval/last.mpk') }}",
 ]
@@ -1110,7 +918,7 @@ elif [ "$#" -gt 0 ]; then
     --index "${INDEX}" \
     "$@"
 else
-  echo "Set IMAGE=/path/to/query.png, SAMPLE=0, or pass search arguments."
+  echo "Set IMAGE=/path/to/query.avif, SAMPLE=0, or pass search arguments."
   exit 1
 fi
 '''

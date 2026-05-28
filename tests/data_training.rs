@@ -3,13 +3,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use almost_enough::StopExt;
 use ann::backend::{Autodiff, Flex};
-use image::{Rgb, RgbImage};
 use json::{OwnedValue, json, prelude::*};
 use pose_obc_retrieval::{
     CocoPoseDataset, HeadUpsampleMode, LiteHrModuleType, LiteHrNetConfig, LiteHrNetPoseConfig,
     PoseDataConfig, PoseTrainingConfig, train_dataset,
 };
+use rgb::Rgb;
 
 type AB = Autodiff<Flex>;
 
@@ -45,15 +46,24 @@ fn write_fixture_dataset(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
     fs::create_dir_all(&image_dir).expect("image dir");
     fs::create_dir_all(&pose_dir).expect("pose dir");
 
-    let mut image = RgbImage::new(64, 64);
+    let width = 64;
+    let height = 64;
+    let mut pixels = Vec::with_capacity(width * height);
     for y in 0..64 {
         for x in 0..64 {
-            image.put_pixel(x, y, Rgb([x as u8, y as u8, 128]));
+            pixels.push(Rgb {
+                r: x as u8,
+                g: y as u8,
+                b: 128,
+            });
         }
     }
-    image
-        .save(image_dir.join("person.png"))
-        .expect("image save");
+    write_avif(
+        &image_dir.join("person.avif"),
+        pixels,
+        width as u32,
+        height as u32,
+    );
 
     let mut pose_keypoints = vec![0.0; 37 * 3];
     pose_keypoints[0] = 32.0;
@@ -77,7 +87,7 @@ fn write_fixture_dataset(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
     keypoints[2] = 2.0;
 
     let annotation: OwnedValue = json!({
-        "images": [{"id": 1, "file_name": "person.png", "width": 64, "height": 64}],
+        "images": [{"id": 1, "file_name": "person.avif", "width": 64, "height": 64}],
         "annotations": [{
             "id": 1,
             "image_id": 1,
@@ -98,6 +108,32 @@ fn write_fixture_dataset(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
     .expect("annotation write");
 
     (annotation_path, image_dir, pose_dir)
+}
+
+fn write_avif(path: &Path, pixels: Vec<Rgb<u8>>, width: u32, height: u32) {
+    let buffer: avif::PixelBuffer =
+        avif::PixelBuffer::<Rgb<u8>>::from_pixels(pixels, width, height)
+            .expect("fixture pixel buffer")
+            .into();
+    let encoded = avif::encode_with(
+        &buffer,
+        &lossless_avif_config(),
+        almost_enough::Unstoppable.into_token(),
+    )
+    .expect("fixture AVIF encode");
+    fs::write(path, encoded.avif_file).expect("fixture image write");
+}
+
+fn lossless_avif_config() -> avif::EncoderConfig {
+    avif::EncoderConfig::new()
+        .quality(100.0)
+        .alpha_quality(100.0)
+        .speed(10)
+        .bit_depth(avif::EncodeBitDepth::Eight)
+        .color_model(avif::EncodeColorModel::Rgb)
+        .alpha_color_mode(avif::EncodeAlphaMode::UnassociatedDirty)
+        .with_qm(false)
+        .with_lossless(true)
 }
 
 #[test]

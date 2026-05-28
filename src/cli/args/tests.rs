@@ -62,6 +62,36 @@ fn parses_retrieval_train_command() {
 }
 
 #[test]
+fn parses_dataset_pack_command() {
+    let cli = Cli::parse_from([
+        "pose-obc-retrieval",
+        "dataset",
+        "pack",
+        "--data-root",
+        "data/pose-obc",
+        "--output-root",
+        "data/pose-obc-packed",
+        "--persona",
+        "persona_01",
+        "--speed",
+        "6",
+        "--force",
+    ]);
+
+    let Command::Dataset(args) = cli.command else {
+        panic!("expected dataset command");
+    };
+    let DatasetTarget::Pack(args) = args.target else {
+        panic!("expected dataset pack command");
+    };
+    assert_eq!(args.data_root, PathBuf::from("data/pose-obc"));
+    assert_eq!(args.output_root, PathBuf::from("data/pose-obc-packed"));
+    assert_eq!(args.personas, vec!["persona_01"]);
+    assert_eq!(args.speed, 6);
+    assert!(args.force);
+}
+
+#[test]
 fn parses_retrieval_backend_argument() {
     let cli = Cli::parse_from([
         "pose-obc-retrieval",

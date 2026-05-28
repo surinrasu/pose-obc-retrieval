@@ -1,5 +1,7 @@
 extern crate ann as burn;
+extern crate ann_store as burn_store;
 
+mod image;
 pub mod pose;
 pub mod retrieval;
 pub mod service;

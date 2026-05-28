@@ -1,7 +1,6 @@
 use std::{collections::HashMap, fs, path::Path};
 
 use ann::prelude::Backend;
-use image::ImageReader;
 use rayon::prelude::*;
 use serde::Deserialize;
 
@@ -174,7 +173,14 @@ impl CocoPoseDataset {
         let sample = self.samples.get(index).ok_or_else(|| {
             PoseDataError::InvalidDataset(format!("sample index {index} out of range"))
         })?;
-        let image = ImageReader::open(&sample.image_path)?.decode()?.to_rgb8();
+        let image = crate::image::open_dynamic_image(&sample.image_path)
+            .map_err(|error| {
+                PoseDataError::InvalidDataset(format!(
+                    "failed to load image {}: {error}",
+                    sample.image_path.display()
+                ))
+            })?
+            .to_rgb8();
         let crop = CropWindow::from_bbox(sample.bbox, &self.config);
 
         let image_tensor = crop_and_normalize(&image, crop, &self.config);

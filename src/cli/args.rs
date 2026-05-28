@@ -5,12 +5,16 @@ use pose_obc_retrieval::{HeadUpsampleMode, LiteHrNetPoseConfig};
 
 extern crate cli as clap;
 
+mod dataset;
 mod parse;
 mod retrieval;
 
 #[cfg(test)]
 mod tests;
 
+pub(super) use dataset::{
+    DatasetArgs, DatasetPackArgs, DatasetTarget, DatasetUnpackArgs, DatasetVerifyArgs,
+};
 pub(super) use retrieval::{
     RetrievalIndexArgs, RetrievalSearchArgs, RetrievalServeArgs, RetrievalTrainArgs,
 };
@@ -28,6 +32,8 @@ pub(super) struct Cli {
 pub(super) enum Command {
     /// Train a model.
     Train(TrainArgs),
+    /// Pack, unpack, and verify local datasets.
+    Dataset(DatasetArgs),
     /// Precompute candidate glyph embeddings into a JSON index.
     Index(RetrievalIndexArgs),
     /// Run a top-k retrieval query from an image or dataset sample.

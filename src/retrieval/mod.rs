@@ -5,6 +5,7 @@ mod features;
 mod index;
 mod io;
 mod model;
+mod pack;
 mod train;
 
 pub use dataset::*;
@@ -15,6 +16,7 @@ pub use features::{
 };
 pub use index::*;
 pub use model::*;
+pub use pack::*;
 pub use train::*;
 
 pub(crate) use cache::{extract_glyph_features_with_cache, extract_pose_features_with_cache};

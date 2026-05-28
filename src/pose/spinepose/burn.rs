@@ -8,7 +8,7 @@ use ann::{
     backend::Flex,
     tensor::{Tensor, TensorData, backend::BackendTypes},
 };
-use image::DynamicImage;
+use img::DynamicImage;
 
 use super::estimator::SPINEPOSE_KEYPOINTS;
 use crate::RetrievalError;
@@ -21,8 +21,11 @@ const POSE_BPK: &str = concat!(
 
 const RFDETR_WIDTH: usize = 576;
 const RFDETR_HEIGHT: usize = 576;
-const RFDETR_SCORE_THRESHOLD: f32 = 0.3;
+// Keep retrieval queries permissive; pose keypoint confidences still down-weight weak crops.
+const RFDETR_SCORE_THRESHOLD: f32 = 0.1;
 const RFDETR_NUM_SELECT: usize = 300;
+// The exported RF-DETR logits include background at index 0; person is the first foreground class.
+const RFDETR_PERSON_CLASS: usize = 1;
 const RFDETR_MEAN: [f32; 3] = [0.485, 0.456, 0.406];
 const RFDETR_STD: [f32; 3] = [0.229, 0.224, 0.225];
 
@@ -59,7 +62,7 @@ static RUNTIME: OnceLock<Result<Mutex<BurnSpinePoseRuntime>, String>> = OnceLock
 
 pub(crate) fn estimate_people(image: &DynamicImage) -> Result<Vec<Vec<[f32; 3]>>, RetrievalError> {
     validate_runtime_config()?;
-    let image = BgrImage::from_dynamic(image);
+    let image = RgbImage::from_dynamic(image);
     let runtime = RUNTIME.get_or_init(|| {
         BurnSpinePoseRuntime::new()
             .map(Mutex::new)
@@ -98,7 +101,7 @@ impl BurnSpinePoseRuntime {
         })
     }
 
-    fn estimate_people(&mut self, image: &BgrImage) -> Result<Vec<Vec<[f32; 3]>>, RetrievalError> {
+    fn estimate_people(&mut self, image: &RgbImage) -> Result<Vec<Vec<[f32; 3]>>, RetrievalError> {
         let boxes = self.detect(image)?;
         let mut people = Vec::with_capacity(boxes.len());
         for bbox in boxes {
@@ -107,7 +110,7 @@ impl BurnSpinePoseRuntime {
         Ok(people)
     }
 
-    fn detect(&self, image: &BgrImage) -> Result<Vec<BBox>, RetrievalError> {
+    fn detect(&self, image: &RgbImage) -> Result<Vec<BBox>, RetrievalError> {
         let input = rfdetr_input(image, &self.device);
         let (boxes, logits) = self.detector.forward(input);
         let (boxes, box_shape) = tensor3_to_vec(boxes)?;
@@ -119,7 +122,10 @@ impl BurnSpinePoseRuntime {
                 box_shape
             )));
         }
-        if logit_shape[0] != 1 || logit_shape[1] != box_shape[1] || logit_shape[2] < 2 {
+        if logit_shape[0] != 1
+            || logit_shape[1] != box_shape[1]
+            || logit_shape[2] <= RFDETR_PERSON_CLASS
+        {
             return Err(RetrievalError::InvalidData(format!(
                 "RF-DETR logits shape {:?} is unsupported for boxes {:?}",
                 logit_shape, box_shape
@@ -130,7 +136,7 @@ impl BurnSpinePoseRuntime {
         let num_classes = logit_shape[2];
         let mut ranked = Vec::with_capacity(num_boxes);
         for box_index in 0..num_boxes {
-            let person_logit = logits[box_index * num_classes + 1];
+            let person_logit = logits[box_index * num_classes + RFDETR_PERSON_CLASS];
             ranked.push((sigmoid(person_logit), box_index));
         }
         ranked.sort_by(|left, right| right.0.total_cmp(&left.0));
@@ -162,7 +168,7 @@ impl BurnSpinePoseRuntime {
         Ok(detections)
     }
 
-    fn estimate_bbox(&self, image: &BgrImage, bbox: BBox) -> Result<Vec<[f32; 3]>, RetrievalError> {
+    fn estimate_bbox(&self, image: &RgbImage, bbox: BBox) -> Result<Vec<[f32; 3]>, RetrievalError> {
         let (input, center, scale) = pose_input(image, bbox, &self.device);
         let (simcc_x, simcc_y) = self.pose.forward(input);
         let (simcc_x, simcc_x_shape) = tensor3_to_vec(simcc_x)?;
@@ -243,20 +249,20 @@ impl BBox {
     }
 }
 
-struct BgrImage {
+struct RgbImage {
     width: usize,
     height: usize,
     pixels: Vec<[f32; 3]>,
 }
 
-impl BgrImage {
+impl RgbImage {
     fn from_dynamic(image: &DynamicImage) -> Self {
         let rgb = image.to_rgb8();
         let width = rgb.width() as usize;
         let height = rgb.height() as usize;
         let pixels = rgb
             .pixels()
-            .map(|pixel| [pixel[2] as f32, pixel[1] as f32, pixel[0] as f32])
+            .map(|pixel| [pixel[0] as f32, pixel[1] as f32, pixel[2] as f32])
             .collect();
         Self {
             width,
@@ -312,7 +318,7 @@ impl BgrImage {
     }
 }
 
-fn rfdetr_input(image: &BgrImage, device: &BurnDevice) -> Tensor<BurnBackend, 4> {
+fn rfdetr_input(image: &RgbImage, device: &BurnDevice) -> Tensor<BurnBackend, 4> {
     let resized = resize_bilinear(image, RFDETR_WIDTH, RFDETR_HEIGHT);
     let mut data = vec![0.0; 3 * RFDETR_HEIGHT * RFDETR_WIDTH];
     for y in 0..RFDETR_HEIGHT {
@@ -331,7 +337,7 @@ fn rfdetr_input(image: &BgrImage, device: &BurnDevice) -> Tensor<BurnBackend, 4>
     )
 }
 
-fn resize_bilinear(image: &BgrImage, width: usize, height: usize) -> Vec<[f32; 3]> {
+fn resize_bilinear(image: &RgbImage, width: usize, height: usize) -> Vec<[f32; 3]> {
     let mut output = vec![[0.0; 3]; width * height];
     let scale_x = image.width as f32 / width as f32;
     let scale_y = image.height as f32 / height as f32;
@@ -348,7 +354,7 @@ fn resize_bilinear(image: &BgrImage, width: usize, height: usize) -> Vec<[f32; 3
 }
 
 fn pose_input(
-    image: &BgrImage,
+    image: &RgbImage,
     bbox: BBox,
     device: &BurnDevice,
 ) -> (Tensor<BurnBackend, 4>, (f32, f32), (f32, f32)) {
@@ -427,4 +433,21 @@ fn require_env_value(name: &str, default: &str, supported: &[&str]) -> Result<()
         "{name}={value:?} is not supported by the Burn SpinePose runtime; supported values: {}",
         supported.join(", ")
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use img::{DynamicImage, Rgb, RgbImage as ImageRgbImage};
+
+    use super::RgbImage;
+
+    #[test]
+    fn dynamic_image_preserves_rgb_channel_order() {
+        let mut source = ImageRgbImage::new(1, 1);
+        source.put_pixel(0, 0, Rgb([10, 20, 30]));
+
+        let image = RgbImage::from_dynamic(&DynamicImage::ImageRgb8(source));
+
+        assert_eq!(image.pixel(0, 0), [10.0, 20.0, 30.0]);
+    }
 }

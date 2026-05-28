@@ -1,4 +1,7 @@
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use ann::tensor::backend::Backend;
 
@@ -52,6 +55,11 @@ pub(super) fn example_image_names() -> Vec<String> {
             .then_with(|| left.cmp(right))
     });
     names
+}
+
+pub(super) fn example_image_path(name: &str) -> Option<PathBuf> {
+    let name = name.trim();
+    is_example_gallery_image_name(name).then(|| Path::new(EXAMPLE_ASSET_DIR).join(name))
 }
 
 pub(super) fn image_response_by_index(
@@ -111,12 +119,7 @@ fn is_example_gallery_image_name(name: &str) -> bool {
         && Path::new(name)
             .extension()
             .and_then(|extension| extension.to_str())
-            .map(|extension| {
-                matches!(
-                    extension.to_ascii_lowercase().as_str(),
-                    "avif" | "png" | "jpg" | "jpeg" | "webp"
-                )
-            })
+            .map(|extension| extension.eq_ignore_ascii_case("avif"))
             .unwrap_or(false)
 }
 
@@ -138,8 +141,5 @@ fn is_example_image_name(name: &str) -> bool {
     else {
         return false;
     };
-    matches!(
-        extension.to_ascii_lowercase().as_str(),
-        "avif" | "png" | "jpg" | "jpeg" | "webp" | "heic" | "heif"
-    )
+    extension.eq_ignore_ascii_case("avif")
 }

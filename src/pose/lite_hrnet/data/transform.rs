@@ -1,4 +1,4 @@
-use image::RgbImage;
+use img::RgbImage;
 
 use super::PoseDataConfig;
 

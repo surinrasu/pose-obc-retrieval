@@ -5,6 +5,12 @@
 !/data/pose-obc/
 /data/pose-obc/*
 !/data/pose-obc/.gitattributes
+!/data/pose-obc-packed/
+/data/pose-obc-packed/*
+!/data/pose-obc-packed/.gitattributes
+!/data/pose-obc-packed/**/
+!/data/pose-obc-packed/**/*.avif
+!/data/pose-obc-packed/**/*.jsonl
 assets/models/
 .spinepose-home/
 .spinepose-home

@@ -4,7 +4,7 @@ use std::fmt::{Display, Formatter};
 #[derive(Debug)]
 pub enum RetrievalError {
     Io(std::io::Error),
-    Image(image::ImageError),
+    Image(img::ImageError),
     Json(json::Error),
     Recorder(ann::record::RecorderError),
     InvalidData(String),
@@ -32,8 +32,8 @@ impl From<std::io::Error> for RetrievalError {
     }
 }
 
-impl From<image::ImageError> for RetrievalError {
-    fn from(value: image::ImageError) -> Self {
+impl From<img::ImageError> for RetrievalError {
+    fn from(value: img::ImageError) -> Self {
         Self::Image(value)
     }
 }

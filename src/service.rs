@@ -134,9 +134,9 @@ mod tests {
             "Content-Disposition: form-data; name=\"k\"\r\n\r\n",
             "3\r\n",
             "--boundary\r\n",
-            "Content-Disposition: form-data; name=\"image\"; filename=\"pose.png\"\r\n",
-            "Content-Type: image/png\r\n\r\n",
-            "png-bytes\r\n",
+            "Content-Disposition: form-data; name=\"image\"; filename=\"pose.avif\"\r\n",
+            "Content-Type: image/avif\r\n\r\n",
+            "avif-bytes\r\n",
             "--boundary--\r\n"
         );
 
@@ -145,7 +145,7 @@ mod tests {
         assert_eq!(form.fields.get("k").map(String::as_str), Some("3"));
         assert_eq!(
             form.files.get("image").map(Vec::as_slice),
-            Some(&b"png-bytes"[..])
+            Some(&b"avif-bytes"[..])
         );
     }
 
@@ -165,7 +165,7 @@ mod tests {
                 codepoint: Some("U+7532".to_string()),
                 character: Some("甲".to_string()),
                 persona: "persona_a".to_string(),
-                glyph_path: std::path::PathBuf::from("glyph.png"),
+                glyph_path: std::path::PathBuf::from("glyph.avif"),
                 embedding: vec![0.1, 0.2],
             },
             score: 0.875,

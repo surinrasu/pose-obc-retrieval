@@ -10,6 +10,18 @@ pub(super) fn render_home(service: &RetrievalService<impl Backend>, error: Optio
     let candidate_count = service.index.entries.len();
     let top_k = service.default_top_k;
     let example_images = super::assets::example_image_names();
+    let default_persona = service
+        .dataset
+        .pairs()
+        .first()
+        .map(|pair| default_persona_query_value(&pair.persona))
+        .unwrap_or_else(|| "1".to_string());
+    let default_id = service
+        .dataset
+        .pairs()
+        .first()
+        .map(|pair| pair.id.clone())
+        .unwrap_or_default();
 
     maud! {
         !DOCTYPE
@@ -54,11 +66,11 @@ pub(super) fn render_home(service: &RetrievalService<impl Backend>, error: Optio
                                     i { "upload_file" }
                                     span { "Choose pose image" }
                                 }
-                                input id="query-image" class="file-input" type="file" name="image" accept="image/png,image/jpeg,image/webp";
+                                input id="query-image" class="file-input" type="file" name="image" accept="image/avif";
                                 div class="query-controls" {
                                     div class="topk-control" {
                                         div.field.border.round {
-                                            input type="number" name="k" min="1" max="50" value=(top_k);
+                                            input id="upload-top-k" type="number" name="k" min="1" max="50" value=(top_k);
                                             label { "top k" }
                                         }
                                     }
@@ -72,13 +84,19 @@ pub(super) fn render_home(service: &RetrievalService<impl Backend>, error: Optio
                             }
                         }
                         article class="query-card" {
-                            h6 { "Query by data sample" }
+                            h6 { "Query by data pair" }
                             form class="query-form" method="get" action="/search" {
                                 div class="query-controls sample-controls" {
-                                    div class="sample-control" {
+                                    div class="persona-control" {
                                         div.field.border.round {
-                                            input type="number" name="sample" min="0" max=(sample_count.saturating_sub(1)) value="0";
-                                            label { "sample id" }
+                                            input type="text" name="persona" value=(default_persona);
+                                            label { "persona no." }
+                                        }
+                                    }
+                                    div class="id-control" {
+                                        div.field.border.round {
+                                            input type="text" name="id" value=(default_id);
+                                            label { "id" }
                                         }
                                     }
                                     div class="topk-control" {
@@ -133,7 +151,7 @@ pub(super) fn render_home(service: &RetrievalService<impl Backend>, error: Optio
                     @if !example_images.is_empty() {
                         div class="example-gallery" aria-label="Example images" {
                             @for name in example_images.iter() {
-                                    a class="example-card" href=(format!("{}{}", super::assets::EXAMPLE_ASSET_PREFIX, name)) aria-label=(format!("Example {name}")) {
+                                    a class="example-card" href=(example_search_href(name, top_k)) data-example-search data-example-name=(name) aria-label=(format!("Search example {name}")) title="Search this example" {
                                         img src=(format!("{}{}", super::assets::EXAMPLE_ASSET_PREFIX, name)) alt=(format!("Example {name}")) "loading"="lazy";
                                 }
                             }
@@ -143,6 +161,7 @@ pub(super) fn render_home(service: &RetrievalService<impl Backend>, error: Optio
                 @if service.live {
                     script { (Raw::dangerously_create(LIVE_JS)) }
                 }
+                script { (Raw::dangerously_create(EXAMPLE_SEARCH_JS)) }
                 script { (Raw::dangerously_create(THEME_JS)) }
             }
         }
@@ -219,6 +238,31 @@ pub(super) fn render_results(
     .to_string()
 }
 
+fn default_persona_query_value(persona: &str) -> String {
+    match persona.strip_prefix("persona_") {
+        Some(number) if number.chars().all(|ch| ch.is_ascii_digit()) => number.to_string(),
+        _ => persona.to_string(),
+    }
+}
+
+fn example_search_href(name: &str, top_k: usize) -> String {
+    format!("/search?example={}&k={top_k}", query_component(name))
+}
+
+fn query_component(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(byte as char)
+            }
+            b' ' => encoded.push('+'),
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
 const THEME_JS: &str = r##"
 (() => {
   const storageKey = "pose-obc-theme";
@@ -267,6 +311,46 @@ const THEME_JS: &str = r##"
   if (media) {
     media.addEventListener("change", () => {
       if (!storedTheme()) applyTheme(preferredTheme());
+    });
+  }
+})();
+"##;
+
+const EXAMPLE_SEARCH_JS: &str = r##"
+(() => {
+  const cards = Array.from(document.querySelectorAll("[data-example-search]"));
+  if (!cards.length) return;
+
+  const topKInput = document.querySelector("#upload-top-k");
+  let searching = false;
+
+  function setSearching(card, value) {
+    searching = value;
+    for (const item of cards) {
+      item.classList.toggle("is-disabled", value && item !== card);
+      item.setAttribute("aria-disabled", value ? "true" : "false");
+    }
+    card.classList.toggle("is-searching", value);
+    card.setAttribute("aria-busy", value ? "true" : "false");
+  }
+
+  function searchHref(card) {
+    const url = new URL(card.href, window.location.href);
+    if (topKInput && topKInput.value) url.searchParams.set("k", topKInput.value);
+    return url.toString();
+  }
+
+  function searchExample(card) {
+    if (searching) return;
+    setSearching(card, true);
+    window.location.href = searchHref(card);
+  }
+
+  for (const card of cards) {
+    card.addEventListener("click", (event) => {
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      event.preventDefault();
+      searchExample(card);
     });
   }
 })();
@@ -347,13 +431,13 @@ const LIVE_JS: &str = r##"
       canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
       const context = canvas.getContext("2d", { willReadFrequently: false });
       context.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.82));
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/avif", 0.82));
       if (!blob) throw new Error("frame encode failed");
 
       const params = new URLSearchParams({ k: topKInput.value || "8" });
       const response = await fetch(`/live/search?${params.toString()}`, {
         method: "POST",
-        headers: { "Content-Type": "image/jpeg" },
+        headers: { "Content-Type": "image/avif" },
         body: blob
       });
       if (!response.ok) throw new Error(await response.text());
@@ -441,8 +525,11 @@ i { font-family: "Material Symbols Outlined"; font-weight: normal; font-style: n
 .query-controls { margin-top: auto; display: grid; grid-template-columns: minmax(8rem, 12rem) 1fr; gap: .75rem; align-items: end; }
 .query-controls > *, .query-card .field, .query-card input, .query-card button { min-width: 0; min-inline-size: 0; max-width: 100%; max-inline-size: 100%; }
 .query-card .field, .query-card input { width: 100%; inline-size: 100%; }
-.sample-controls { grid-template-columns: minmax(10rem, 1fr) minmax(7rem, 10rem) auto; }
+.sample-controls { grid-template-columns: minmax(7rem, 9rem) minmax(12rem, 1fr) minmax(7rem, 10rem); }
 .actions { min-width: 0; display: flex; align-items: end; justify-content: flex-end; gap: .5rem; min-height: 4rem; }
+.actions button { min-inline-size: 8.5rem; justify-content: center; }
+.sample-controls .actions { grid-column: 1 / -1; justify-content: stretch; }
+.sample-controls .actions button { width: 100%; }
 .live-card { grid-column: 1 / -1; }
 .live-stage { position: relative; aspect-ratio: 16 / 9; min-height: 14rem; overflow: hidden; border-radius: .5rem; background: black; }
 .live-stage video { width: 100%; height: 100%; display: block; object-fit: contain; background: black; }
@@ -460,8 +547,11 @@ i { font-family: "Material Symbols Outlined"; font-weight: normal; font-style: n
 .live-result-body span, .live-result-body small { color: var(--on-surface-variant); font-size: .78rem; }
 .live-result-body progress { width: 100%; height: .45rem; }
 .example-gallery { margin-top: 1.25rem; display: flex; gap: .75rem; overflow-x: auto; overflow-y: hidden; padding: .1rem 0 .6rem; scroll-snap-type: x proximity; }
-.example-card { flex: 0 0 11rem; color: inherit; text-decoration: none; border: 1px solid var(--outline-variant); border-radius: .5rem; overflow: hidden; background: var(--surface-container); padding: .35rem; scroll-snap-align: start; }
+.example-card { position: relative; flex: 0 0 11rem; color: inherit; text-decoration: none; border: 1px solid var(--outline-variant); border-radius: .5rem; overflow: hidden; background: var(--surface-container); padding: .35rem; scroll-snap-align: start; cursor: pointer; }
+.example-card.is-disabled { pointer-events: none; opacity: .55; }
+.example-card.is-searching::after { content: ""; position: absolute; top: .75rem; right: .75rem; width: 1.45rem; height: 1.45rem; border: .18rem solid rgb(255 255 255 / .75); border-top-color: var(--primary); border-radius: 50%; animation: example-spin .75s linear infinite; }
 .example-card img { width: 100%; aspect-ratio: 9 / 16; object-fit: cover; border-radius: .35rem; display: block; }
+@keyframes example-spin { to { transform: rotate(360deg); } }
 .result-card img { width: 100%; aspect-ratio: 1 / 1; object-fit: contain; background: white; border-radius: .35rem; display: block; }
 .result-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .75rem; }
 .result-card { position: relative; border-radius: .5rem; }

@@ -7,7 +7,7 @@ use std::{
 pub enum PoseDataError {
     Io(std::io::Error),
     Json(json::Error),
-    Image(image::ImageError),
+    Image(img::ImageError),
     InvalidDataset(String),
 }
 
@@ -36,8 +36,8 @@ impl From<json::Error> for PoseDataError {
     }
 }
 
-impl From<image::ImageError> for PoseDataError {
-    fn from(value: image::ImageError) -> Self {
+impl From<img::ImageError> for PoseDataError {
+    fn from(value: img::ImageError) -> Self {
         Self::Image(value)
     }
 }

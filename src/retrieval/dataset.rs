@@ -51,7 +51,7 @@ impl RetrievalPairDataset {
             let mut image_paths = Vec::new();
             for entry in fs::read_dir(&image_dir)? {
                 let entry = entry?;
-                if entry.file_type()?.is_file() && is_png(&entry.path()) {
+                if entry.file_type()?.is_file() && is_supported_image(&entry.path()) {
                     image_paths.push(entry.path());
                 }
             }
@@ -170,10 +170,10 @@ pub fn resolve_existing_data_root(data_root: &Path) -> Result<PathBuf, Retrieval
     )))
 }
 
-fn is_png(path: &Path) -> bool {
+fn is_supported_image(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("png"))
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("avif"))
 }
 
 struct GlyphIdMetadata {

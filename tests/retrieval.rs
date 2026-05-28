@@ -3,8 +3,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use almost_enough::StopExt;
 use ann::backend::{Autodiff, Flex};
-use image::{Rgb, RgbImage};
 use json::{OwnedValue, json};
 use pose_obc_retrieval::{
     CandidateEntry, CandidateIndex, RetrievalModelConfig, RetrievalPairDataset,
@@ -12,6 +12,7 @@ use pose_obc_retrieval::{
     extract_pose_features_from_path, read_candidate_index, search_index, train_retrieval_dataset,
     write_candidate_index,
 };
+use rgb::Rgb;
 
 type AB = Autodiff<Flex>;
 
@@ -23,7 +24,16 @@ fn fixture_dir(name: &str) -> PathBuf {
 }
 
 fn write_fixture_image(path: &Path, variant: u8) {
-    let mut image = RgbImage::from_pixel(32, 32, Rgb([255, 255, 255]));
+    let width = 32;
+    let height = 32;
+    let mut pixels = vec![
+        Rgb {
+            r: 255,
+            g: 255,
+            b: 255
+        };
+        width * height
+    ];
     for y in 6..26 {
         for x in 6..26 {
             let draw = if variant == 0 {
@@ -32,11 +42,41 @@ fn write_fixture_image(path: &Path, variant: u8) {
                 (14..=18).contains(&y)
             };
             if draw {
-                image.put_pixel(x, y, Rgb([20, 20, 20]));
+                pixels[y * width + x] = Rgb {
+                    r: 20,
+                    g: 20,
+                    b: 20,
+                };
             }
         }
     }
-    image.save(path).expect("fixture image save");
+    write_avif(path, pixels, width as u32, height as u32);
+}
+
+fn write_avif(path: &Path, pixels: Vec<Rgb<u8>>, width: u32, height: u32) {
+    let buffer: avif::PixelBuffer =
+        avif::PixelBuffer::<Rgb<u8>>::from_pixels(pixels, width, height)
+            .expect("fixture pixel buffer")
+            .into();
+    let encoded = avif::encode_with(
+        &buffer,
+        &lossless_avif_config(),
+        almost_enough::Unstoppable.into_token(),
+    )
+    .expect("fixture AVIF encode");
+    fs::write(path, encoded.avif_file).expect("fixture image write");
+}
+
+fn lossless_avif_config() -> avif::EncoderConfig {
+    avif::EncoderConfig::new()
+        .quality(100.0)
+        .alpha_quality(100.0)
+        .speed(10)
+        .bit_depth(avif::EncodeBitDepth::Eight)
+        .color_model(avif::EncodeColorModel::Rgb)
+        .alpha_color_mode(avif::EncodeAlphaMode::UnassociatedDirty)
+        .with_qm(false)
+        .with_lossless(true)
 }
 
 fn write_fixture_pose(path: &Path, variant: u8) {
@@ -74,10 +114,10 @@ fn write_fixture_dataset(root: &Path) -> PathBuf {
     fs::create_dir_all(&glyph_dir).expect("glyph dir");
     fs::create_dir_all(&pose_dir).expect("pose dir");
 
-    for (name, variant) in [("U+4E00.png", 0), ("U+4E8C.png", 1)] {
+    for (name, variant) in [("U+4E00.avif", 0), ("U+4E8C.avif", 1)] {
         write_fixture_image(&image_dir.join(name), variant);
         write_fixture_image(&glyph_dir.join(name), variant);
-        write_fixture_pose(&pose_dir.join(name.replace(".png", ".json")), variant);
+        write_fixture_pose(&pose_dir.join(name.replace(".avif", ".json")), variant);
     }
 
     data_root
@@ -160,7 +200,7 @@ fn search_rejects_embedding_dimension_mismatch() {
             codepoint: Some("U+4E00".to_string()),
             character: Some("一".to_string()),
             persona: "persona_fixture".to_string(),
-            glyph_path: PathBuf::from("glyph.png"),
+            glyph_path: PathBuf::from("glyph.avif"),
             embedding: vec![0.1, 0.2, 0.3, 0.4],
         }],
     };

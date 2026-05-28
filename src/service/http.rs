@@ -293,18 +293,13 @@ pub(super) fn parse_top_k(value: Option<&String>, default_top_k: usize) -> usize
 }
 
 pub(super) fn image_content_type(path: &Path) -> &'static str {
-    match path
+    if path
         .extension()
         .and_then(|extension| extension.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase()
-        .as_str()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("avif"))
     {
-        "avif" => "image/avif",
-        "jpg" | "jpeg" => "image/jpeg",
-        "webp" => "image/webp",
-        "heic" => "image/heic",
-        "heif" => "image/heif",
-        _ => "image/png",
+        "image/avif"
+    } else {
+        "application/octet-stream"
     }
 }

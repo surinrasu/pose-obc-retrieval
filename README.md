@@ -15,8 +15,7 @@ mise install
 # Download SpinePose ONNX models used by the Burn runtime
 mise run data:spinepose
 
-# Download the pose-obc retrieval dataset from Hugging Face
-# You may need to login to an hf account with `hf auth login` first
+# Pull packed pose-obc files from Git LFS and unpack them locally
 mise run data:pose-obc
 
 # Train the retrieval model and build the glyph embedding index
@@ -66,7 +65,7 @@ Extracted pose and glyph feature will be cached under `runs/retrieval/feature_ca
 
 ```sh
 SAMPLE=0 mise run retrieval:search
-IMAGE=/path/to/query.png mise run retrieval:search
+IMAGE=/path/to/query.avif mise run retrieval:search
 TOP_K=16 SAMPLE=0 mise run retrieval:search
 ```
 
@@ -88,11 +87,32 @@ The retrieval dataset is expected to contain one or more `persona_*` directories
 data/pose-obc/
   persona_01/
     images/
-      0201_u516D.png
+      0201_u516D.avif
     glyphs/
-      0201_u516D.png
+      0201_u516D.avif
     poses/
       0201_u516D.json
+```
+
+### Packed Dataset
+
+Packed retrieval data is stored under `data/pose-obc-packed` as one directory per persona:
+
+```text
+data/pose-obc-packed/
+  persona_01/
+    images.avif
+    glyphs.avif
+    manifest.jsonl
+    poses.jsonl
+```
+
+`images.avif` and `glyphs.avif` are multi-frame AVIF files. `manifest.jsonl` stays as normal Git text for reviewable diffs and records both source file hashes and packed-frame hashes; `poses.jsonl` and AVIF files are Git LFS objects.
+
+```sh
+cargo run --release -- dataset pack --force
+cargo run --release -- dataset verify
+cargo run --release -- dataset unpack --force
 ```
 
 ## Pose Model
@@ -113,8 +133,8 @@ mise run train:coco2017:metal
 
 ## License
 
-This program is free software: you can redistribute it and/or modify it under the terms of the GNU Lesser General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+This program is free software: you can redistribute it and/or modify it under the terms of the GNU Affero General Public License as published by the Free Software Foundation, version 3 of the License.
 
-This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public License for more details.
+This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more details.
 
-You should have received a copy of the GNU Lesser General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.
+You should have received a copy of the GNU Affero General Public License along with this program. If not, see <https://www.gnu.org/licenses/>.

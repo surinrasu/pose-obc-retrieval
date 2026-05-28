@@ -2,6 +2,7 @@
 name = "pose-obc-retrieval"
 version = "0.1.0"
 edition = "2024"
+license = "AGPL-3.0-only"
 
 [features]
 default = ["flex"]
@@ -10,14 +11,20 @@ metal = ["ann/metal", "ann/fusion", "flex"]
 
 [dependencies]
 ann = { package = "burn", version = "0.21.0", default-features = false, features = ["std", "train"] }
-burn-store = { version = "0.21.0", default-features = false, features = ["std", "burnpack"] }
+ann-store = { package = "burn-store", version = "0.21.0", default-features = false, features = ["std", "burnpack"] }
 cli = { package = "clap", version = "4.5", features = ["derive"] }
-image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
+img = { package = "image", version = "0.25.10", default-features = false }
+almost-enough = { version = "0.4.3", default-features = false }
 rand = "0.8.6"
 rayon = "1.11.0"
+rgb = { version = "0.8.52", default-features = false }
 serde = { version = "1.0.228", features = ["derive"] }
+sha2 = "0.10.9"
 json = { package = "simd-json", version = "0.17.0" }
 hypertext = "0.12.1"
+avif = { package = "zenavif", version = "0.1.6", default-features = false, features = ["encode-imazen", "encode-threading"] }
+avif-serialize = { package = "zenavif-serialize", version = "0.1.4" }
+av1-encoder = { package = "zenrav1e", version = "0.1.4", default-features = false, features = ["threading"] }
 
 [build-dependencies]
 burn-onnx = "0.21.0"

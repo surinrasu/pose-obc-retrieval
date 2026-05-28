@@ -4,6 +4,7 @@ use args::{Cli, Command, TrainTarget};
 use cli::Parser;
 
 mod args;
+mod dataset;
 mod pose;
 mod retrieval;
 
@@ -15,6 +16,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             TrainTarget::Retrieval(args) => retrieval::run_retrieval_train(args),
             TrainTarget::Pose(args) => pose::run_train(*args),
         },
+        Command::Dataset(args) => dataset::run_dataset(args),
         Command::Index(args) => retrieval::run_retrieval_index(args),
         Command::Search(args) => retrieval::run_retrieval_search(args),
         Command::Serve(args) => retrieval::run_retrieval_serve(args),
